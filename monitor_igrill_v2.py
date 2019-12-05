@@ -20,8 +20,6 @@ if __name__ == '__main__':
  periph = IGrillV2Peripheral(ADDRESS)
  while True:
   temperature=periph.read_temperature()
-  # Probe 1
-  if temperature[1] != 63536.0:
-   publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=temperature[1], probe2=temperature[2], probe3=temperature[3], probe4=temperature[4], batt=periph.read_battery)
+  publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=temperature[1], probe2=temperature[2], probe3=temperature[3], probe4=temperature[4], batt=periph.read_battery)
 
   time.sleep(INTERVAL)
