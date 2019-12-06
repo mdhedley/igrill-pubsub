@@ -21,6 +21,6 @@ if __name__ == '__main__':
  periph = IGrillPeripheral(ADDRESS)
  while True:
   temperature=periph.ReadTemperature()
-  publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=str(temperature[0]), probe2=str(temperature[1]), probe3=str(temperature[2]), probe4=str(temperature[3]), batt=str(periph.ReadBattery()),time=datetime.now().isoformat())
+  publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=str(temperature[0]), probe2=str(temperature[1]), probe3=str(temperature[2]), probe4=str(temperature[3]), batt=str(periph.ReadBattery()),time=datetime.datetime.now().isoformat())
 
   time.sleep(INTERVAL)
