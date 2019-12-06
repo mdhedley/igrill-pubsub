@@ -4,7 +4,7 @@ from google.oauth2 import service_account
 from google.cloud import pubsub_v1
 import datetime
 
-from igrill import IGrillV2Peripheral
+from igrill import IGrillPeripheral
 
 ADDRESS = os.environ['IGRILL_ADDRESS']
 SERVICE_ACCOUNT_KEY = os.environ['SERVICE_ACCOUNT_KEY']
