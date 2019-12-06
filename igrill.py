@@ -1,7 +1,22 @@
-import bluepy.btle as btle
-import random
+#!/usr/bin/env python3
+"""
+  Copyright (c) 2019:   Scott Atkins <scott@kins.dev>
+                        (https://git.kins.dev/igrill-smoker)
+  License:              MIT License
+                        See the LICENSE file
+"""
 
-from crypto import encrypt, decrypt
+__author__ = "Scott Atkins"
+__version__ = "1.4.0"
+__license__ = "MIT"
+
+import bluepy.btle as btle
+import logging
+import struct
+import configparser
+import sys
+import os
+from ..common.constant import CONFIG
 
 class UUIDS:
     FIRMWARE_VERSION   = btle.UUID("64ac0001-4a4b-4b58-9f37-94d3c52ffdf7")
@@ -21,10 +36,18 @@ class UUIDS:
     PROBE3_THRESHOLD   = btle.UUID("06ef0007-2e06-4b79-9e33-fce2c42805ec")
     PROBE4_TEMPERATURE = btle.UUID("06ef0008-2e06-4b79-9e33-fce2c42805ec")
     PROBE4_THRESHOLD   = btle.UUID("06ef0009-2e06-4b79-9e33-fce2c42805ec")
-
+    MAX_PROBE_COUNT    = 4
 
 class IDevicePeripheral(btle.Peripheral):
-    encryption_key = None
+    m_probe_count = 0
+    m_iGrillChars = {}
+    m_battery_char = None
+    m_temp_chars = {}
+    m_threshold_chars = {}
+    LOW_TEMP_KEY = "LOW_TEMP"
+    HIGH_TEMP_KEY = "HIGH_TEMP"
+    LOW_DEFAULT = -32768
+    HIGH_DEFAULT = 32767
 
     def __init__(self, address):
         """
@@ -32,113 +55,92 @@ class IDevicePeripheral(btle.Peripheral):
         """
         btle.Peripheral.__init__(self, address)
 
-        # iDevice devices require bonding. I don't think this will give us bonding
-        # if no bonding exists, so please use bluetoothctl to create a bond first
         self.setSecurityLevel("medium")
 
-        # enumerate all characteristics so we can look up handles from uuids
-        self.characteristics = self.getCharacteristics()
+        # save all the characteristics in a dictionary, as the iGrill will disconnect
+        # if they are queried at the wrong time
+        characteristics = self.getCharacteristics()
+        for c in characteristics:
+            self.m_iGrillChars[c.uuid] = c
 
         # authenticate with iDevices custom challenge/response protocol
-        if not self.authenticate():
+        if not self.Authenticate():
             raise RuntimeError("Unable to authenticate with device")
 
-    def characteristic(self, uuid):
-        """
-        Returns the characteristic for a given uuid.
-        """
-        for c in self.characteristics:
-            if c.uuid == uuid:
-                return c
+        # Setup battery which is the same regardless of device
+        self.m_battery_char = self.m_iGrillChars[UUIDS.BATTERY_LEVEL]
 
-    def authenticate(self):
+        for probe_num in range(1, self.m_probe_count + 1):
+            temp_char_name = 'PROBE{}_TEMPERATURE'.format(probe_num)
+            temp_char = self.m_iGrillChars[getattr(UUIDS, temp_char_name)]
+            threshold_char_name = 'PROBE{}_THRESHOLD'.format(probe_num)
+            threshold_char = self.m_iGrillChars[getattr(UUIDS, threshold_char_name)]
+            self.m_temp_chars[probe_num] = temp_char
+            self.m_threshold_chars[probe_num] = threshold_char
+
+    def ReadTemperature(self):
+        setLimits = False
+        # TODO: Make this a constant shared between bash and python
+        configFile = (CONFIG.BASEPATH + '/run/limits.ini')
+        if os.path.isfile(configFile):
+            config = configparser.ConfigParser()
+            # does not throw an error, just returns the empty set if the file doesn't exist
+            config.read(configFile)
+            setLimits = True
+
+        temps = [-2000] * UUIDS.MAX_PROBE_COUNT
+        for probe_num, temp_char in list(self.m_temp_chars.items()):
+            temps[probe_num - 1] = struct.unpack("<h",temp_char.read()[:2])[0]
+            if setLimits:
+                probe_name = 'Probe{0}'.format(probe_num)
+                self.m_threshold_chars[probe_num].write(struct.pack("<hh",
+                                                                    config.getint(probe_name, self.LOW_TEMP_KEY, fallback=self.LOW_DEFAULT),
+                                                                    config.getint(probe_name, self.HIGH_TEMP_KEY, fallback=self.HIGH_DEFAULT)))
+        return temps
+
+    def Authenticate(self):
         """
         Performs iDevices challenge/response handshake. Returns if handshake succeeded
+        Works for all devices using this handshake, no key required
+        """
+        logging.debug("Authenticating...")
+
+        # send app challenge (16 bytes) (must be wrapped in a bytearray)
+        challenge = bytes(b'\0' * 16)
+        logging.debug(("Sending key of all 0's: {}").format(challenge.hex()))
+        self.m_iGrillChars[UUIDS.APP_CHALLENGE].write(challenge, True)
 
         """
-        print("Authenticating...")
-        # encryption key used by igrill mini
-        key = "".join([chr((256 + x) % 256) for x in self.encryption_key])
+        Normally we'd have to perform some crypto operations:
+            Write a challenge (in this case 16 bytes of 0)
+            Read the value
+            Decrypt w/ the key
+            Check the first 8 bytes match our challenge
+            Set the first 8 bytes 0
+            Encrypt with the key
+            Send back the new value
+        But wait!  Our first 8 bytes are already 0.  That means we don't need the key.
+        We just hand back the same encrypted value we get and we're good.
+        """
+        encrypted_device_challenge = self.m_iGrillChars[UUIDS.DEVICE_CHALLENGE].read()
+        logging.debug("encrypted device challenge: {0}".format((encrypted_device_challenge).hex()))
+        self.m_iGrillChars[UUIDS.DEVICE_RESPONSE].write(encrypted_device_challenge, True)
 
-        # send app challenge
-        challenge = str(bytearray([(random.randint(0, 255)) for i in range(8)] + [0] * 8))
-        self.characteristic(UUIDS.APP_CHALLENGE).write(challenge, True)
-
-        # read device challenge
-        encrypted_device_challenge = self.characteristic(UUIDS.DEVICE_CHALLENGE).read()
-        print("encrypted device challenge:", str(encrypted_device_challenge).encode("hex"))
-        device_challenge = decrypt(key, encrypted_device_challenge)
-        print("decrypted device challenge:", str(device_challenge).encode("hex"))
-
-        # verify device challenge
-        if device_challenge[:8] != challenge[:8]:
-            print("Invalid device challenge")
-            return False
-
-        # send device response
-        device_response = chr(0) * 8 + device_challenge[8:]
-        print("device response: ", str(device_response).encode("hex"))
-        encrypted_device_response = encrypt(key, device_response)
-        self.characteristic(UUIDS.DEVICE_RESPONSE).write(encrypted_device_response, True)
-
-        print("Authenticated")
+        logging.debug("Authenticated")
 
         return True
 
+    def ReadBattery(self):
+        return int(ord(self.m_battery_char.read()))
 
 class IGrillMiniPeripheral(IDevicePeripheral):
     """
-    Specialization of iDevice peripheral for the iGrill Mini (sets the correct encryption key
+    Specialization of iDevice peripheral for the iGrill Mini
     """
+    m_probe_count = 1
 
-    # encryption key for the iGrill Mini
-    encryption_key = [-19, 94, 48, -114, -117, -52, -111, 19, 48, 108, -44, 104, 84, 21, 62, -35]
-
-    def __init__(self, address):
-        IDevicePeripheral.__init__(self, address)
-
-        # find characteristics for battery and temperature
-        self.battery_char = self.characteristic(UUIDS.BATTERY_LEVEL)
-        self.temp_char = self.characteristic(UUIDS.PROBE1_TEMPERATURE)
-
-    def read_temperature(self):
-        temp = ord(self.temp_char.read()[1]) * 256
-        temp += ord(self.temp_char.read()[0])
-
-        return { 1: float(temp), 2: 0.0, 3: 0.0, 4: 0.0 }
-
-    def read_battery(self):
-        return float(ord(self.battery_char.read()[0]))
-
-
-class IGrillV2Peripheral(IDevicePeripheral):
+class IGrillPeripheral(IDevicePeripheral):
     """
-    Specialization of iDevice peripheral for the iGrill v2
+    Specialization of iDevice peripheral for the iGrill2/iGrill3
     """
-
-    # encryption key for the iGrill v2
-    encryption_key = [-33, 51, -32, -119, -12, 72, 78, 115, -110, -44, -49, -71, 70, -25, -123, -74]
-
-    def __init__(self, address):
-        IDevicePeripheral.__init__(self, address)
-
-        # find characteristics for battery and temperature
-        self.battery_char = self.characteristic(UUIDS.BATTERY_LEVEL)
-        self.temp_chars = {}
-
-        for probe_num in range(1,5):
-            temp_char_name = 'PROBE{}_TEMPERATURE'.format(probe_num)
-            temp_char = self.characteristic(getattr(UUIDS, temp_char_name))
-            self.temp_chars[probe_num] = temp_char
-
-    def read_temperature(self):
-        temps = {}
-        for probe_num, temp_char in self.temp_chars.items():
-            temp = ord(temp_char.read()[1]) * 256
-            temp += ord(temp_char.read()[0])
-            temps[probe_num] = float(temp)
-
-        return temps
-
-    def read_battery(self):
-        return float(ord(self.battery_char.read()[0]))
+    m_probe_count = 4
