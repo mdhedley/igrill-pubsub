@@ -2,6 +2,7 @@ import time
 import os
 from google.oauth2 import service_account
 from google.cloud import pubsub_v1
+import datetime
 
 from igrill import IGrillV2Peripheral
 
@@ -19,7 +20,7 @@ if __name__ == '__main__':
 
  periph = IGrillV2Peripheral(ADDRESS)
  while True:
-  temperature=periph.read_temperature()
-  publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=temperature[1], probe2=temperature[2], probe3=temperature[3], probe4=temperature[4], batt=periph.read_battery)
+  temperature=periph.ReadTemperature()
+  publisher.publish(PUBSUB_TOPIC,b"bbq/temp", probe1=str(temperature[0]), probe2=str(temperature[1]), probe3=str(temperature[2]), probe4=str(temperature[3]), batt=str(periph.ReadBattery()),time=datetime.now().isoformat())
 
   time.sleep(INTERVAL)
