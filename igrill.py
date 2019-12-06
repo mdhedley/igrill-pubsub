@@ -16,7 +16,7 @@ import struct
 import configparser
 import sys
 import os
-from ..common.constant import CONFIG
+from constant import CONFIG
 
 class UUIDS:
     FIRMWARE_VERSION   = btle.UUID("64ac0001-4a4b-4b58-9f37-94d3c52ffdf7")
